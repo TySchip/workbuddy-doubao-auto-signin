@@ -1,0 +1,14 @@
+{
+  "name": "doubao-windows-checkin",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "login": "node src/index.js login",
+    "status": "node src/index.js status",
+    "checkin": "node src/index.js checkin",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": { "playwright": "1.64.1" }
+}
