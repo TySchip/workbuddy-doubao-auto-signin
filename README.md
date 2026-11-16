@@ -71,7 +71,7 @@ Get-Content .\signin.log -Tail 10
    npm run login
    ```
 
-   这是单独的客户端数据目录，原客户端已经登录也需要在新窗口登录一次。脚本不会复制原客户端的 Cookie。
+   这是单独的客户端数据目录，原客户端已经登录也需要在新窗口登录一次。脚本不会复制原客户端的 Cookie。登录命令会保留窗口，方便手动登录；完成后可自行关闭。
 
 3. 检查活动页，然后手动运行一次：
 
@@ -80,7 +80,7 @@ Get-Content .\signin.log -Tail 10
    npm run checkin   # 尝试签到；已领则不重复点击
    ```
 
-   `already` 表示页面显示已领取；`dry_run` 表示找到待领取按钮，但检查模式没有点击；`success` 表示点击后刷新页面仍显示已领取。`needs_login`、`not_found`、`uncertain` 和 `运行失败` 表示需要检查，不能当作成功。
+   `already` 表示页面显示已领取；`dry_run` 表示找到待领取按钮，但检查模式没有点击；`success` 表示点击后刷新页面仍显示已领取。`needs_login`、`not_found`、`uncertain` 和 `运行失败` 表示需要检查，不能当作成功。检查或签到结束时，会关闭本次运行新显示的独立窗口，开始运行前已经可见的窗口会保留。客户端可能继续在后台运行。
 
 4. 确认手动运行正常后，安装计划任务：
 
@@ -112,7 +112,7 @@ New-Item -ItemType Directory -Force .\data | Out-Null
 ## 🧪 验证情况
 
 - WorkBuddy：国内版曾实际签到并到账；上游相关自动化测试可在 `workbuddy` 目录执行 `python -m unittest discover -s tests`。
-- 豆包：已在 Windows 客户端验证已领取状态识别；待领取时的点击、确认和不误点其他奖励已通过本地模拟页面测试。真实活动中“未签 → 点击 → 到账”尚待验证。安装了 Microsoft Edge 后，可在 `doubao` 目录执行 `npm test`；安装器模拟测试为 `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\installer.test.ps1`，不会修改系统任务。
+- 豆包：本项目所依据的本机 zaoba Windows 适配器于 2026-11-16 实际完成签到，活动卡片显示领取 400 额度；本仓库提取后的独立版已验证已领取状态及模拟页面点击，真实未签到领取仍待独立验证。安装了 Microsoft Edge 后，可在 `doubao` 目录执行 `npm test`；安装器模拟测试为 `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\installer.test.ps1`，不会修改系统任务。
 
 ## 🙏 来源与改动
 

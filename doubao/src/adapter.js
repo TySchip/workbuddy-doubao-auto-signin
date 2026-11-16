@@ -4,9 +4,32 @@ import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const execFileAsync = promisify(execFile);
+const closeScript = fileURLToPath(new URL('../close-doubao-window.ps1', import.meta.url));
+
+const windowArgs = (pid, profile) => ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', closeScript, '-ProcessId', String(pid), '-Profile', profile];
+
+async function visibleWindows(pid, profile) {
+  const { stdout } = await execFileAsync('powershell.exe', [...windowArgs(pid, profile), '-List'], { windowsHide: true, timeout: 15000 });
+  const handles = stdout.trim().split(/\s+/).filter(Boolean);
+  if (handles.some((value) => !/^\d+$/.test(value))) throw new Error('无法识别已有豆包窗口，未执行自动签到');
+  return handles.join(',');
+}
+
+async function closeOwnedWindow(pid, profile, keep = '') {
+  try {
+    await execFileAsync('powershell.exe', [...windowArgs(pid, profile), ...(keep ? ['-Keep', keep] : [])], { windowsHide: true, timeout: 15000 });
+  } catch (err) {
+    console.error(`关闭独立豆包窗口失败：${err.message}`);
+  }
+}
+
+export async function showOwnedWindow(pid, profile) {
+  await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', closeScript, '-ProcessId', String(pid), '-Profile', profile, '-Show'], { windowsHide: true, timeout: 15000 });
+}
 
 const CARD = '[data-reward-code="daily_signin"]';
 const ACTIVITY_URL = 'https://www.doubao.com/pc/agent-explore';
@@ -21,7 +44,7 @@ async function dailyState(page) {
 
 export async function checkDailyPage(page, { dryRun = false } = {}) {
   const card = page.locator(CARD);
-  await card.waitFor({ state: 'attached', timeout: 20000 }).catch(() => null);
+  await card.waitFor({ state: 'attached', timeout: 45000 }).catch(() => null);
   if (await card.count() !== 1) {
     const text = await page.evaluate(() => document.body?.innerText || '');
     return /手机号登录|扫码登录|登录\/注册/.test(text)
@@ -74,52 +97,66 @@ async function cdpTargets(port) {
   }
 }
 
-export async function ensureClient({ app, profile, port = 9446 }) {
+export async function ensureClient({ app, profile, port = 9446, closeOnFailure = false }) {
   if (process.platform !== 'win32') throw new Error('豆包自动签到目前仅支持 Windows');
   // Only connect to a listener launched with this project's own profile.
   const verifyOwner = async () => {
-    const script = `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $c=Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction Stop | Select-Object -First 1; (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $c.OwningProcess)).CommandLine`;
+    const script = `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $c=Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction Stop | Select-Object -First 1; $p=Get-CimInstance Win32_Process -Filter ('ProcessId=' + $c.OwningProcess); Write-Output $p.ProcessId; Write-Output $p.CommandLine`;
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
-    if (!stdout.toLowerCase().includes(`--user-data-dir=${profile}`.toLowerCase()) &&
-        !stdout.toLowerCase().includes(`--user-data-dir="${profile}"`.toLowerCase())) {
+    const [ownerId, ...lines] = stdout.trim().split(/\r?\n/);
+    const commandLine = lines.join('\n').toLowerCase();
+    if (!/^\d+$/.test(ownerId) || (!commandLine.includes(`--user-data-dir=${profile}`.toLowerCase()) &&
+        !commandLine.includes(`--user-data-dir="${profile}"`.toLowerCase()))) {
       throw new Error(`端口 ${port} 已被其他程序占用；未连接或关闭该程序`);
     }
+    return Number(ownerId);
   };
   let targets = await cdpTargets(port);
-  if (!targets) {
-    const occupied = await new Promise((resolve) => {
-      const socket = net.createConnection({ host: '127.0.0.1', port });
-      socket.setTimeout(1200);
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('error', () => resolve(false));
-      socket.once('timeout', () => { socket.destroy(); resolve(true); });
-    });
-    if (occupied) throw new Error(`端口 ${port} 已被其他程序占用；未连接或关闭该程序`);
-    fs.mkdirSync(profile, { recursive: true });
-    const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
-    delete env.NODE_OPTIONS;
-    const child = spawn(app, [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`], {
-      detached: true, stdio: 'ignore', env,
-    });
-    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-    child.unref();
-    for (let attempt = 0; attempt < 40 && !targets?.some(isDoubaoTarget); attempt++) {
-      await sleep(1000);
-      targets = await cdpTargets(port);
+  let launchedPid;
+  try {
+    if (!targets) {
+      const occupied = await new Promise((resolve) => {
+        const socket = net.createConnection({ host: '127.0.0.1', port });
+        socket.setTimeout(1200);
+        socket.once('connect', () => { socket.destroy(); resolve(true); });
+        socket.once('error', () => resolve(false));
+        socket.once('timeout', () => { socket.destroy(); resolve(true); });
+      });
+      if (occupied) throw new Error(`端口 ${port} 已被其他程序占用；未连接或关闭该程序`);
+      fs.mkdirSync(profile, { recursive: true });
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      delete env.NODE_OPTIONS;
+      const child = spawn(app, [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`], {
+        detached: true, stdio: 'ignore', env,
+      });
+      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      launchedPid = child.pid;
+      child.unref();
+      for (let attempt = 0; attempt < 40 && !targets?.some(isDoubaoTarget); attempt++) {
+        await sleep(1000);
+        targets = await cdpTargets(port);
+      }
     }
+    if (!Array.isArray(targets) || !targets.some(isDoubaoTarget)) {
+      throw new Error('独立豆包调试端口未就绪或属于其他程序；未重启任何客户端');
+    }
+    const ownerPid = await verifyOwner();
+    return { port, launchedPid, ownerPid };
+  } catch (err) {
+    if (launchedPid && closeOnFailure) await closeOwnedWindow(launchedPid, profile);
+    throw err;
   }
-  if (!Array.isArray(targets) || !targets.some(isDoubaoTarget)) {
-    throw new Error('独立豆包调试端口未就绪或属于其他程序；未重启任何客户端');
-  }
-  await verifyOwner();
-  return port;
 }
 
 export async function runWindowsDoubao({ app, profile, dryRun }) {
-  const port = await ensureClient({ app, profile });
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15000 });
+  const { port, launchedPid, ownerPid } = await ensureClient({ app, profile, closeOnFailure: true });
+  let browser;
+  let preserved;
   try {
+    if (launchedPid && launchedPid !== ownerPid) throw new Error('豆包端口所属进程发生变化，已停止操作');
+    preserved = launchedPid ? '' : await visibleWindows(ownerPid, profile);
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15000 });
     const context = browser.contexts()[0];
     const page = context.pages().find((p) => p.url().startsWith(ACTIVITY_URL)) || await context.newPage();
     await page.goto(ACTIVITY_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -131,6 +168,7 @@ export async function runWindowsDoubao({ app, profile, dryRun }) {
     }
     return result;
   } finally {
-    await browser.close();
+    await browser?.close().catch(() => {});
+    if (launchedPid || preserved !== undefined) await closeOwnedWindow(launchedPid || ownerPid, profile, preserved);
   }
 }
