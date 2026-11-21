@@ -102,7 +102,7 @@ export async function ensureClient({ app, profile, port = 9446, closeOnFailure =
   // Only connect to a listener launched with this project's own profile.
   const verifyOwner = async () => {
     const script = `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $c=Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction Stop | Select-Object -First 1; $p=Get-CimInstance Win32_Process -Filter ('ProcessId=' + $c.OwningProcess); Write-Output $p.ProcessId; Write-Output $p.CommandLine`;
-    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
+    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 15000 });
     const [ownerId, ...lines] = stdout.trim().split(/\r?\n/);
     const commandLine = lines.join('\n').toLowerCase();
     if (!/^\d+$/.test(ownerId) || (!commandLine.includes(`--user-data-dir=${profile}`.toLowerCase()) &&
